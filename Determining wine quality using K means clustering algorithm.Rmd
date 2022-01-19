@@ -1,0 +1,732 @@
+---
+title: "Wine Quality Prediction Prediction"
+author: "Sanjana Prasad"
+date: "07/12/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+# Set number of significant digits
+options(digits = 3)
+
+# The 'load_lib' function installs and loads
+# a vector of libraries
+load_lib <- function(libs) {
+  sapply(libs, function(lib) {
+    
+    # Load the package. If it doesn't exists, install and load.
+    if(!require(lib, character.only = TRUE)) {
+
+      # Install the package
+      install.packages(lib)
+      
+      # Load the package
+      library(lib, character.only = TRUE)
+      }
+})}
+
+# Load the libraries used in this section
+libs <- c("tidyverse", "icesTAF", "readr", 
+          "lubridate", "caret")
+
+load_lib(libs)
+
+# Download the datasets from UCI repository
+if(!dir.exists("data")) mkdir("data")
+if(!file.exists("data/winequality-red.csv")) 
+  download.file("https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv", "data/winequality-red.csv")
+if(!file.exists("data/winequality-white.csv")) 
+  download.file("https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-white.csv", "data/winequality-white.csv")
+if(!file.exists("data/winequality.names")) 
+  download.file("https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality.names", "data/winequality.names")
+
+# Import the datasets.
+# 'red' is the red wine dataset
+# 'white' is the white wine dataset.
+red   <- read_delim("data/winequality-red.csv", 
+                    delim = ";", 
+                    locale = locale(decimal_mark = ".", 
+                                    grouping_mark = ","), 
+                    col_names = TRUE)
+white <- read_delim("data/winequality-white.csv", 
+                    delim = ";", 
+                    locale = locale(decimal_mark = ".", 
+                                    grouping_mark = ","), 
+                    col_names = TRUE)
+
+# Set column names
+cnames <- c("fixed_acidity", "volatile_acidity", "citric_acid",
+            "residual_sugar", "chlorides", "free_sulfur_dioxide",
+            "total_sulfur_dioxide", "density", "pH",
+            "sulphates", "alcohol", "quality")
+
+# Columns used for prediction are all columns
+# except 'quality'.
+xcol <- c("fixed_acidity", "volatile_acidity", "citric_acid",
+          "residual_sugar", "chlorides", "free_sulfur_dioxide",
+          "total_sulfur_dioxide", "density", "pH",
+          "sulphates", "alcohol")
+
+colnames(red)   <- cnames
+colnames(white) <- cnames
+
+# Add the column 'type' to define the type of wine
+red   <- mutate(red,   type = "red")
+white <- mutate(white, type = "white")
+
+# Join 'red' and 'white' datasets
+wine <- rbind(red, white)
+wine <- mutate(wine, 
+               quality = as.factor(quality),
+               type = as.factor(type))
+levels(wine$quality) <- paste0("Q", levels(wine$quality))
+
+
+```
+```{r cars}
+# Test set will be 10% of the entire dataset
+set.seed(2020, sample.kind = "Rounding")
+test_index <- createDataPartition(y = wine$type, 
+                                  times = 1, 
+                                  p = 0.1, 
+                                  list = FALSE)
+
+# Train and test sets for wine type
+train_set <- wine[-test_index,]
+test_set  <- wine[test_index,]
+
+# Train and test sets for red wine quality
+train_set_red <- train_set[which(train_set$type == "red"),]
+test_set_red  <- test_set[which(test_set$type == "red"),]
+
+train_set_red$quality <- factor(train_set_red$quality)
+test_set_red$quality  <- factor(test_set_red$quality)
+
+```
+###Data Exploration and Visualization
+```{r cars}
+sum(is.na(wine))
+```
+```{r cars}
+# Identification of near zero variance predictors
+nearZeroVar(train_set[, xcol], saveMetrics = TRUE)
+```
+```{r cars}
+# Compactly Display the Structure of an Arbitrary R Object
+str(train_set)
+```
+```{r cars}
+# Statistics summary
+summary(train_set)
+```
+```{r cars}
+# Distribution of red and white wines
+ggplot(data = train_set) + 
+  geom_bar(aes(type, fill = type)) +
+  labs(title = "Prevalence of red and white wines",
+       caption = "Source: train_set dataset.") +
+  theme(legend.position = 'none')
+```
+###Data visualization
+```{r cars}
+load_lib(c("gridExtra", "ggridges", "ggplot2",
+           "gtable", "grid", "egg"))
+
+
+# The 'grid_arrange_shared_legend' function creates a grid of 
+# plots with one legend for all plots.
+# Reference: Baptiste Auguié - 2019
+# https://cran.r-project.org/web/packages/egg/vignettes/Ecosystem.html
+grid_arrange_shared_legend <-
+  function(...,
+           ncol = length(list(...)),
+           nrow = 1,
+           position = c("bottom", "right")) {
+    
+    plots <- list(...)
+    position <- match.arg(position)
+    g <-
+      ggplotGrob(plots[[1]] + theme(legend.position = position))$grobs
+    legend <- g[[which(sapply(g, function(x)
+      x$name) == "guide-box")]]
+    lheight <- sum(legend$height)
+    lwidth <- sum(legend$width)
+    gl <- lapply(plots, function(x)
+      x + theme(legend.position = "none"))
+    gl <- c(gl, ncol = ncol, nrow = nrow)
+    
+    combined <- switch(
+      position,
+      "bottom" = arrangeGrob(
+        do.call(arrangeGrob, gl),
+        legend,
+        ncol = 1,
+        heights = unit.c(unit(1, "npc") - lheight, lheight)
+      ),
+      "right" = arrangeGrob(
+        do.call(arrangeGrob, gl),
+        legend,
+        ncol = 2,
+        widths = unit.c(unit(1, "npc") - lwidth, lwidth)
+      )
+    )
+    
+    grid.newpage()
+    grid.draw(combined)
+    
+    # return gtable invisibly
+    invisible(combined)
+    
+  }
+
+```
+###Density plots
+```{r cars}
+# Density grid
+dens_grid <- lapply(xcol, FUN=function(var) {
+  # Build the plots
+  ggplot(train_set) + 
+    geom_density(aes_string(x = var, fill = "type"), alpha = 0.5) +
+    ggtitle(var)
+})
+do.call(grid_arrange_shared_legend, args=c(dens_grid, nrow = 4, ncol = 3))
+```
+```{r cars}
+train_set_red <- train_set_red %>% 
+  mutate(quality2 = factor(case_when(
+    quality %in% c("Q3", "Q4") ~ "low",
+    quality %in% c("Q5", "Q6") ~ "medium",
+    quality %in% c("Q7", "Q8") ~ "high"),
+    levels = c("low", "medium", "high")))
+
+test_set_red <- test_set_red %>% 
+  mutate(quality2 = factor(case_when(
+    quality %in% c("Q3", "Q4") ~ "low",
+    quality %in% c("Q5", "Q6") ~ "medium",
+    quality %in% c("Q7", "Q8") ~ "high"),
+    levels = c("low", "medium", "high")))
+
+train_set_red %>% ggplot(aes(quality2, fill = quality2)) + geom_bar()
+```
+```{r cars}
+# Density ridge plots
+lapply(xcol, FUN=function(var) {
+  
+  train_set_red %>% 
+    ggplot(data = ., aes_string(x = var, 
+                                y = "quality", 
+                                fill = "quality", 
+                                alpha = 0.5)) + 
+    geom_density_ridges() +
+    theme_ridges() +
+    theme(axis.text.x = element_text(hjust = 1)) +
+    scale_fill_brewer(palette = 4) +
+    ggtitle(paste0("Red wine quality by ", var))
+})
+```
+```{r cars}
+# Density ridge plots
+lapply(xcol, FUN=function(var) {
+  
+  train_set_red %>% 
+    ggplot(data = ., aes_string(x = var, 
+                                y = "quality2", 
+                                fill = "quality2", 
+                                alpha = 0.5)) + 
+    geom_density_ridges() +
+    # Format chart
+    theme_ridges() +
+    scale_fill_brewer(palette = 4) +
+    # Format labels
+    theme(axis.text.x = element_text(hjust = 1)) +
+    ggtitle(paste0("Red wine quality by ", var)) +
+    ylab("Quality")
+})
+```
+###Correlation
+```{r cars}
+# Load the "corrgram" package to draw a correlogram
+load_lib("corrgram")
+
+# Draw a correlogram
+corrgram(train_set[,xcol], order=TRUE, 
+         lower.panel = panel.shade, 
+         upper.panel = panel.cor, 
+         text.panel  = panel.txt,
+         main = "Correlogram: Wine Physicochemical Properties",
+         col.regions=colorRampPalette(c("darkgoldenrod4", "burlywood1",
+                                        "darkkhaki", "darkgreen")))
+```
+###Linear Regression
+```{r cars}
+# Train the linear regression model
+fit_lm <- train_set %>% 
+  # Convert the outcome to numeric
+  mutate(type = ifelse(type == "red", 1, 0)) %>%
+  # Fit the model
+  lm(type ~ total_sulfur_dioxide + chlorides + volatile_acidity, data = .)
+
+# Predict
+p_hat_lm <- predict(fit_lm, newdata = test_set)
+
+# Convert the predicted value to factor
+y_hat_lm <- factor(ifelse(p_hat_lm > 0.5, "red", "white"))
+
+# Evaluate the results
+caret::confusionMatrix(y_hat_lm, test_set$type)
+```
+```{r cars}
+# Formula used in predictions
+fml <- as.formula(paste("type", "~",                          paste(xcol, collapse=' + ')))
+```
+#KNN
+```{r cars}
+# Train
+fit_knn <- knn3(formula = fml, data = train_set, k = 5)
+
+# Predict
+y_knn <- predict(object = fit_knn, 
+                 newdata = test_set, 
+                 type ="class")
+
+# Compare the results: confusion matrix
+caret::confusionMatrix(data = y_knn, 
+                       reference = test_set$type, 
+                       positive = "red")
+```
+###Random Forest
+```{r cars}
+# The "randomForest" package trains classification and regression
+# with Random Forest
+load_lib("randomForest")
+# Train the model
+fit_rf <- randomForest(formula = fml, data = train_set)
+
+# Predict
+y_rf <- predict(object = fit_rf, newdata = test_set)
+
+# Compare the results: confusion matrix
+caret::confusionMatrix(data = y_rf, 
+                       reference = test_set$type, 
+                       positive = "red")
+```
+###Linear Discriminant Analysis - LDA
+```{r cars}
+load_lib("MASS")
+# Train the model
+fit_lda <- lda(formula = fml, data = train_set)
+
+# Predict
+y_lda <- predict(object = fit_lda, newdata = test_set)
+
+# Compare the results: confusion matrix
+caret::confusionMatrix(data = y_lda[[1]], 
+                       reference = test_set$type, 
+                       positive = "red")
+```
+###Quadratic Discriminant Analysis - QDA
+```{r cars}
+load_lib(c("MASS", "scales"))
+# Train the model
+fit_qda <- qda(formula = fml, data = train_set)
+
+# Predict
+y_qda <- predict(object = fit_qda, newdata = test_set)
+
+# Compare the results: confusion matrix
+caret::confusionMatrix(data = y_qda[[1]], 
+                       reference = test_set$type, 
+                       positive = "red")
+```
+###Cross Validation and Ensemble
+```{r cars}
+# Package "pROC" creates ROC and precision-recall plots
+load_lib(c("pROC", "plotROC"))
+
+# Several machine learning libraries
+load_lib(c("e1071", "dplyr", "fastAdaboost", "gam", 
+           "gbm", "import", "kernlab", "kknn", "klaR", 
+           "MASS", "mboost", "mgcv", "monmlp", "naivebayes", "nnet", "plyr", 
+           "ranger", "randomForest", "Rborist", "RSNNS", "wsrf"))
+
+
+# Define models
+models <- c("glm", "lda", "naive_bayes", "svmLinear", "rpart",
+            "knn", "gamLoess", "multinom", "qda", "rf", "adaboost")
+
+# We run cross validation in 10 folds, training with 90% of the data.
+# We save the prediction to calculate the ROC and precision-recall curves
+# and we use twoClassSummary to compute the sensitivity, specificity and 
+# area under the ROC curve
+control <- trainControl(method = "cv", number = 10, p = .9,
+                        summaryFunction = twoClassSummary, 
+                        classProbs = TRUE,
+                        savePredictions = TRUE)
+
+control <- trainControl(method = "cv", number = 10, p = .9,
+                        classProbs = TRUE,
+                        savePredictions = TRUE)
+
+# Create 'results' table. The first row
+# contains NAs and will be removed after
+# the training
+results <- tibble(Model = NA,
+                  Accuracy = NA,
+                  Sensitivity = NA,
+                  Specificity = NA,
+                  F1_Score = NA,
+                  AUC = NA)
+#-------------------------------
+# Start parallel processing
+#-------------------------------
+# The 'train' function in the 'caret' package allows the use of
+# parallel processing. Here we enable this before training the models.
+# See this link for details:
+# http://topepo.github.io/caret/parallel-processing.html
+cores <- 4    # Number of CPU cores to use
+# Load 'doParallel' package for parallel processing
+load_lib("doParallel")
+cl <- makePSOCKcluster(cores)
+registerDoParallel(cl)
+
+```
+
+```{r cars}
+set.seed(1234, sample.kind = "Rounding")
+# Formula used in predictions
+fml <- as.formula(paste("type", "~", 
+                         paste(xcol, collapse=' + ')))
+
+# Run predictions
+preds <- sapply(models, function(model){ 
+  
+  if (model == "knn") {
+    # knn use custom tuning parameters
+    grid <- data.frame(k = seq(3, 50, 2))
+    fit <- caret::train(form = fml, 
+                        method = model, 
+                        data = train_set, 
+                        trControl = control,
+                        tuneGrid = grid)
+  } else if (model == "rf") {
+    # Random forest use custom tuning parameters
+    grid <- data.frame(mtry = c(1, 2, 3, 4, 5, 10, 25, 50, 100))
+    
+    fit <- caret::train(form = fml,
+                        method = "rf", 
+                        data = train_set,
+                        trControl = control,
+                        ntree = 150,
+                        tuneGrid = grid,
+                        nSamp = 5000)
+  } else {
+    # Other models use standard parameters (no tuning)
+    fit <- caret::train(form = fml, 
+                        method = model, 
+                        data = train_set, 
+                        trControl = control)
+  }
+  
+  # Predictions
+  pred <- predict(object = fit, newdata = test_set)
+  
+  # Accuracy
+  acc <- mean(pred == test_set$type)
+  
+  # Sensitivity
+  sen <- sensitivity(data = pred, 
+                     reference = test_set$type, 
+                     positive = "red")
+  # Specificity
+  spe <- specificity(data = pred, 
+                     reference = test_set$type, 
+                     positive = "red")
+  
+  # F1 score
+  f1 <- F_meas(data = factor(pred), reference = test_set$type)
+  
+  # AUC
+  auc_val <- auc(fit$pred$obs, fit$pred$red)
+  
+  # Store stats in 'results' table
+  results <<- rbind(results,
+                    tibble(
+                      Model = model,
+                      Accuracy = acc,
+                      Sensitivity = sen,
+                      Specificity = spe,
+                      AUC = auc_val,
+                      F1_Score = f1))
+
+  # The predictions will be used for ensemble
+  return(pred)
+}) 
+
+# Remove the first row of 'results' that contains NAs
+results <- results[2:(nrow(results)),]
+```
+```{r cars}
+votes <- rowMeans(preds == "red")
+y_hat <- factor(ifelse(votes > 0.5, "red", "white"))
+
+# Update the 'results' table
+results <<- rbind(results,
+                  tibble(
+                    Model = "Ensemble",
+                    Accuracy = mean(y_hat == test_set$type),
+                    Sensitivity = sensitivity(y_hat, test_set$type),
+                    Specificity = specificity(y_hat, test_set$type),
+                    AUC = auc(y_hat, as.numeric(test_set$type)),
+                    F1_Score = F_meas(y_hat, test_set$type)))
+results
+```
+```{r cars}
+Accuracy  = results[which.max(results$Accuracy),1]$Model
+Accuracy
+Sensitivity = results[which.max(results$Sensitivity),1]$Model
+Sensitivity
+Specificity = results[which.max(results$Specificity),1]$Model
+Specificity 
+F_1   = results[which.max(results$F1_Score),1]$Model
+F_1
+AUC  = results[which.max(results$AUC),1]$Model
+    add_colnames = TRUE
+AUC 
+    
+```
+```{r cars}
+# Each plot is simple Model vs Stats
+results %>% 
+  # Convert columns to lines
+  pivot_longer(cols = 2:6, names_to = "Metric", values_drop_na = TRUE) %>%
+  ggplot(aes(x = Model, y = value, group = 1)) + 
+      geom_line() +
+      geom_point() +
+      # Y axis scale
+      ylim(0.75, 1) +
+      # Format labels
+      ggtitle("Model performance") + 
+      ylab("") +
+      theme(legend.position="none" ,
+            axis.text.x = element_text(angle = 90)) +
+      # Arrange in grid
+    facet_wrap(~Metric)
+```
+```{r cars}
+results
+```
+###Predicting Quality
+```{r cars}
+set.seed(1234, sample.kind = "Rounding")
+# Formula used in predictions
+fml_qual <- as.formula(paste("quality2", "~", 
+                             paste(xcol, collapse=' + ')))
+
+# Define models
+#"glm",gamLoess, qda, adaboost
+models <- c( "lda", "naive_bayes", "svmLinear", "rpart",
+            "knn", "multinom", "rf")
+
+# Create 'results' table. The first row
+# contains NAs and will be removed after
+# the training
+quality_results <- tibble(Model = NA,
+                          Quality = NA,
+                          Accuracy = NA,
+                          Sensitivity = NA,
+                          Specificity = NA,
+                          F1_Score = NA)
+
+preds_qual <- sapply(models, function(model){ 
+  
+  print(model)
+  if (model == "knn") {
+    # knn use custom tuning parameters
+    grid <- data.frame(k = seq(3, 50, 2))
+    fit <- caret::train(form = fml_qual, 
+                        method = model, 
+                        data = train_set_red, 
+                        trControl = control,
+                        tuneGrid = grid)
+  } else if (model == "rf") {
+    # Random forest use custom tuning parameters
+    grid <- data.frame(mtry = c(1, 2, 3, 4, 5, 10, 25, 50, 100))
+    
+    fit <- caret::train(form = fml_qual,
+                        method = "rf", 
+                        data = train_set_red,
+                        trControl = control,
+                        ntree = 150,
+                        tuneGrid = grid,
+                        nSamp = 5000)
+  } else {
+    # Other models use standard parameters (no tuning)
+    fit <- caret::train(form = fml_qual, 
+                        method = model, 
+                        data = train_set_red, 
+                        trControl = control)
+  }
+  
+  # Predictions
+  pred <- predict(object = fit, newdata = test_set_red)
+  
+  # Accuracy
+  acc <- mean(pred == test_set_red$quality2)
+
+  # Sensitivity
+  sen <- caret::confusionMatrix(pred,
+                                test_set_red$quality2)$byClass[,"Sensitivity"]
+  # Specificity
+  spe <- caret::confusionMatrix(pred,
+                                test_set_red$quality2)$byClass[,"Specificity"]
+  
+  # F1 score
+  f1 <- caret::confusionMatrix(pred,
+                               test_set_red$quality2)$byClass[,"F1"]
+  
+  # Store stats in 'results' table
+  quality_results <<- rbind(quality_results,
+                            tibble(Model = model, 
+                                   Quality = levels(test_set_red$quality2),
+                                   Accuracy = acc,
+                                   Sensitivity = sen,
+                                   Specificity = spe,
+                                   F1_Score = f1))
+
+  # The predictions will be used for ensemble
+  return(pred)
+}) 
+
+# Remove the first row of 'results' that contains NAs
+quality_results <- quality_results[2:(nrow(quality_results)),]
+```
+```{r cars}
+# Use votes method to ensemble the predictions
+votes <- data.frame(low    = rowSums(preds_qual =="low"),
+                    medium = rowSums(preds_qual =="medium"),
+                    high   = rowSums(preds_qual =="high"))
+
+y_hat <- factor(sapply(1:nrow(votes), function(x)
+  colnames(votes[which.max(votes[x,])])))
+
+y_hat <- relevel(y_hat, "medium")
+
+  # Accuracy
+  acc <- caret::confusionMatrix(y_hat,
+                                test_set_red$quality2)$overall["Accuracy"]
+
+  # Sensitivity
+  sen <- caret::confusionMatrix(y_hat,
+                                test_set_red$quality2)$byClass[,"Sensitivity"]
+  # Specificity
+  spe <- caret::confusionMatrix(y_hat,
+                                test_set_red$quality2)$byClass[,"Specificity"]
+  
+  # F1 score
+  f1 <- caret::confusionMatrix(y_hat,
+                               test_set_red$quality2)$byClass[,"F1"]
+
+  
+quality_results <<- rbind(quality_results,
+                          tibble(Model = "Ensemble",
+                                 Quality = levels(test_set_red$quality2),
+                                 Accuracy = acc,
+                                 Sensitivity = sen,
+                                 Specificity = spe,
+                                 F1_Score = f1))
+```
+```{r cars}
+metrics <- names(quality_results)[3:6]
+
+res <- sapply(metrics, function(var){
+  
+  # Plot stored in 'p'
+  p <- quality_results %>% 
+    # Convert columns to lines
+    pivot_longer(cols = 3:6, names_to = "Metric", 
+                 values_drop_na = TRUE) %>%
+    
+    pivot_wider(names_from = Quality) %>%
+    filter(Metric == var) %>%
+    
+    ggplot(aes(x = Model, group = 1)) + 
+        # Draw lines
+        geom_line(aes(y = low,     col = "low")) +
+        geom_line(aes(y = medium,  col = "medium")) +
+        geom_line(aes(y = high,    col = "high")) +
+        # Draw points
+        geom_point(aes(y = low,    col = "low")) +
+        geom_point(aes(y = medium, col = "medium")) +
+        geom_point(aes(y = high,   col = "high")) +
+        # Format labels
+        ggtitle(var) + 
+        ylab("Model") +
+        theme(axis.text.x = element_text(angle = 90))
+
+    # Show the plot
+    print(p)
+})
+```
+```{r cars}
+stopCluster(cl)
+```
+###Clustering
+```{r cars}
+load_lib("factoextra")
+
+# Determine and visualize the optimal number of clusters 
+# using total within sum of square (method = "wss")
+train_set %>% filter(type == "red") %>% .[,xcol] %>%
+  fviz_nbclust(x = ., FUNcluster = kmeans, method = "wss") + 
+  geom_vline(xintercept = 4, linetype =2) +
+  scale_y_continuous(labels = comma)
+```
+```{r cars}
+# We use 25 random starts for the clusters
+k <- train_set %>% filter(type == "red") %>% .[,xcol] %>%
+      kmeans(x = ., centers = 4, nstart = 25)
+
+# Calculate cluster means
+cm <- data.frame(t(k$centers), add_rownames = TRUE)
+colnames(cm) <- c("Feature", paste("Cluster", 1:4))
+print(cm)  
+```
+```{r cars}
+# Plot the cluster
+train_set %>% filter(type == "red") %>% .[,xcol] %>%
+  fviz_cluster(object = k, 
+               choose.vars = c("chlorides", "total_sulfur_dioxide"),
+               geom   = "point", 
+               repel  = TRUE, 
+               main   = "Cluster plot with selected features",
+               xlab   = "Chlorides",
+               ylab   = "Total Sulfur Dioxide")
+```
+```{r cars}
+```
+```{r cars}
+```
+```{r cars}
+```
+
+
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
